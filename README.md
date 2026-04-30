@@ -1,6 +1,6 @@
 # Wav2Lip Knowledge Distillation
 
-This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip-sync quality while reducing training cost and model complexity.
+This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) speech to lip sync model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip-sync quality while reducing training cost and model complexity.
 
 ## Overview
 
