@@ -49,13 +49,23 @@ The table above summarizes student models trained with different combinations of
        width="800">
 </p>
 
-These sample frames compare student outputs at 80 epochs for several loss configurations. Models trained with the full multi loss KD setup produce faces that are structurally and texturally closer to the teacher outputs, while single loss students show artifacts such as flat textures, checkerboard patterns, or unstable convergence. 
+#### Multi Loss Wins
 
-The channel distillation loss encourages the student’s intermediate decoder feature channels to match the teacher’s, and when combined with other losses it improves LSE‑D/LSE‑C by transferring more detailed internal structure. However, channel distillation on its own does not produce reasonable output faces. Without an output loss, the model fails to learn good visual outputs.
+The best results came from **combining multiple losses together**. Models trained with channel distillation + SSIM + feature + style losses achieved the strongest lip sync metrics (LSE-D and LSE-C scores) and reached stable validation loss.
 
-With style loss alone, a light hatched pattern appears near the top of the face, highlighting that style information without stronger structural or output guidance leads to distortions. TV loss alone drives the image toward a nearly uniform gray face, leaving no meaningful face to evaluate with LSE‑D or LSE‑C, which shows that TV is best used alongside other losses rather than by itself. The L1 only teacher configuration also underperforms visually and in training dynamics. Its loss curve never shows stable learning and instead bounces around rather than decreasing, indicating that L1 to the teacher alone is not a sufficient learning signal.
+Sample frames comparing student outputs at 80 epochs showed that the full multi loss knowledge distillation setup produced faces that were structurally and texturally closer to the teacher outputs. For the better performing models, visual differences between student and teacher outputs were often subtle, suggesting that a more challenging dataset could better highlight the effects of different loss combinations.
 
-Overall, the best performance was achieved when multiple losses were used together, especially channel distillation alongside SSIM, feature, and style. For the better performing models, it was often difficult to see clear visual differences between student and teacher outputs, suggesting that a more challenging dataset could provide a better test case for visually highlighting the impact of different loss combinations.
+#### Single Losses Fall Short
+
+When tested individually, single loss student models consistently struggled and produced visible defects:
+
+- **Channel distillation alone:** Failed to produce recognizable faces without output level guidance. Although it helps the student match the teacher's intermediate decoder feature channels and improves LSE-D/LSE-C when combined with other losses, it does not produce reasonable output faces on its own.
+
+- **Style loss only:** Created a light hatched pattern near the top of the face, showing that style information without stronger structural or output guidance can lead to distortions.
+
+- **TV loss alone:** Drove the image toward a nearly uniform gray face, destroying facial features and leaving no meaningful face to evaluate with LSE-D or LSE-C. This suggests TV loss is more useful as a supporting loss than as a standalone objective.
+
+- **L1 to teacher or Ground Truth only:** Produced unstable training curves that bounced rather than decreased, indicating that L1 alone was not a sufficient learning signal. This configuration also underperformed visually.
 
 
 ## What I Changed
