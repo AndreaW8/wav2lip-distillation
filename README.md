@@ -1,336 +1,130 @@
-# **Wav2Lip**: *Accurately Lip-syncing Videos In The Wild* 
+# Wav2Lip Knowledge Distillation
 
-# Commercial Version
+This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip-sync quality while reducing training cost and model complexity.
 
-Create your first lipsync generation in minutes. Please note, the commercial version is of a much higher quality than the old open source model!
+## Overview
 
-## Create your API Key
+This work modifies the original Wav2Lip training and inference pipeline to support teacher–student distillation experiments. The student model is trained from a pretrained, frozen Wav2Lip GAN teacher by combining multiple distillation losses on top of the sync loss to transfer both output behavior and intermediate feature information. The GAN model was chosen as the teacher because of its superior visual quality. To understand which of the KD losses had the greatest effect, all hyperparameters were kept constant and only the weight of each loss was changed to determine whether that loss was included in a given experiment.
 
-Create your API key from the [Dashboard](https://sync.so/keys). You will use this key to securely access the Sync API.
+### Distillation Losses
 
-## Make your first generation
+- **Channel distillation:** Transfers intermediate decoder feature channels from the teacher to the student to encourage similar internal representations.
+- **SSIM loss:** Encourages local structural similarity between teacher and student outputs by comparing luminance, contrast, and structure. It is sensitive to local structural changes and mimics human perception.
+- **Feature loss:** Minimizes the L1 difference between the activations of specific layers in a pretrained VGG network. This is encouraging the student’s output to be perceptually similar to the teacher’s.
+- **Style loss:** Compares the L1 loss of Gram matrices for the same VGG features. It encourages similarity in style characteristics such as color and textures.
+- **Total variation (TV) loss:** Measures the internal variation of an image to reduce noise.  On its own it will encourage all pixels to be the same and will result in a gray image with no face.
+- **L1 loss to ground truth:** Compares the student’s output directly to the ground truth video frames with an L1 pixel loss.
+- **L1 loss to teacher output:** Compares the student’s output to the teacher’s output with an L1 loss.
 
-The following example shows how to make a lipsync generation using the Sync API.
+The work draws on compression and distillation ideas from [A Unified Compression Framework for Efficient Speech-Driven Talking-Face Generation](https://arxiv.org/abs/2304.00471) and uses the [OMGD repository](https://github.com/bytedance/OMGD/tree/f2492a449498e6b88289666b02ddc47b2296465c) as a reference for implementing losses described in [Online Multi-Granularity Distillation for GAN Compression](https://arxiv.org/abs/2108.06908).
 
-### Python
 
-#### Step 1: Install Sync SDK
+### Evaluation Metrics
 
-```bash
-pip install syncsdk
-```
+The two main benchmarks used in this work, LSE-D and LSE-C, were introduced by the original Wav2Lip work.
 
-#### Step 2: Make your first generation
+- **LSE-D (LipSyncError Distance):** Measures the average error between generated and ground‑truth lip movements for a given audio file. A lower value indicates better sync between lip movements and speech.
+- **LSE-C (LipSyncError Confidence):** Measures audio–video alignment confidence. A higher value corresponds to more realistic lip movements.
 
-Copy the following code into a file `quickstart.py` and replace `YOUR_API_KEY_HERE` with your generated API key.
 
-```python
-# quickstart.py
-import time
-from sync import Sync
-from sync.common import Audio, GenerationOptions, Video
-from sync.core.api_error import ApiError
+### Results Highlights
 
-# ---------- UPDATE API KEY ----------
-# Replace with your Sync.so API key
-api_key = "YOUR_API_KEY_HERE" 
+The knowledge distillation setup successfully transferred knowledge from the Wav2Lip GAN teacher to a smaller student model, achieving comparable lip-sync quality with far fewer training epochs when multiple loss terms were combined. These student models were trained for 80 epochs, compared to the teacher model which was trained for 300 epochs.
 
-# ----------[OPTIONAL] UPDATE INPUT VIDEO AND AUDIO URL ----------
-# URL to your source video
-video_url = "https://assets.sync.so/docs/example-video.mp4"
-# URL to your audio file
-audio_url = "https://assets.sync.so/docs/example-audio.wav"
-# ----------------------------------------
+#### Quantitative Metrics
 
-client = Sync(
-    base_url="https://api.sync.so", 
-    api_key=api_key
-).generations
+<p align="center">
+  <img src="results/KD_Result_Metrics.png"
+       alt="Knowledge distillation results table showing LSE-D, LSE-C, and plateau epochs for different loss combinations"
+       width="450">
+</p>
 
-print("Starting lip sync generation job...")
+The table above summarizes student models trained with different combinations of KD losses against the pretrained Wav2Lip models from the original  [Wav2Lip work](https://github.com/Rudrabha/Wav2Lip). Each row reports LSE-D (lower is better), LSE-C (higher is better), and the epoch where validation loss plateaued. Configurations that combined channel distillation with SSIM, feature, style, and TV losses achieved stronger lip-sync metrics and earlier plateau epochs than most single-loss models. All KD models include the sync loss, and the Wav2Lip model with GAN was used as the KD teacher model.
 
-try:
-    response = client.create(
-        input=[Video(url=video_url),Audio(url=audio_url)],
-        model="lipsync-2",
-        options=GenerationOptions(sync_mode="cut_off"),
-        outputFileName="quickstart"
-    )
-except ApiError as e:
-    print(f'create generation request failed with status code {e.status_code} and error {e.body}')
-    exit()
+#### Model outputs at 80 epochs
 
-job_id = response.id
-print(f"Generation submitted successfully, job id: {job_id}")
+<p align="center">
+  <img src="results/KD_result_images.png"
+       alt="Student model output frames at 80 epochs for different KD loss configurations"
+       width="800">
+</p>
 
-generation = client.get(job_id)
-status = generation.status
-while status not in ['COMPLETED', 'FAILED']:
-    print('polling status for generation', job_id)
-    time.sleep(10)
-    generation = client.get(job_id)
-    status = generation.status
+These sample frames compare student outputs at 80 epochs for several loss configurations. Models trained with the full multi loss KD setup produce faces that are structurally and texturally closer to the teacher outputs, while single loss students show artifacts such as flat textures, checkerboard patterns, or unstable convergence. 
 
-if status == 'COMPLETED':
-    print('generation', job_id, 'completed successfully, output url:', generation.output_url)
-else:
-    print('generation', job_id, 'failed')
-```
+The channel distillation loss encourages the student’s intermediate decoder feature channels to match the teacher’s, and when combined with other losses it improves LSE‑D/LSE‑C by transferring more detailed internal structure. However, channel distillation on its own does not produce reasonable output faces. Without an output loss, the model fails to learn good visual outputs.
 
-Run the script:
+With style loss alone, a light hatched pattern appears near the top of the face, highlighting that style information without stronger structural or output guidance leads to distortions. TV loss alone drives the image toward a nearly uniform gray face, leaving no meaningful face to evaluate with LSE‑D or LSE‑C, which shows that TV is best used alongside other losses rather than by itself. The L1 only teacher configuration also underperforms visually and in training dynamics. Its loss curve never shows stable learning and instead bounces around rather than decreasing, indicating that L1 to the teacher alone is not a sufficient learning signal.
 
-```bash
-python quickstart.py
-```
+Overall, the best performance was achieved when multiple losses were used together, especially channel distillation alongside SSIM, feature, and style. For the better performing models, it was often difficult to see clear visual differences between student and teacher outputs, suggesting that a more challenging dataset could provide a better test case for visually highlighting the impact of different loss combinations.
 
-#### Step 3: Done!
 
-It may take a few minutes for the generation to complete. You should see the generated video URL in the terminal post completion.
+## What I Changed
 
----
+### Training Infrastructure Changes for Simultaneous Experiments
 
-### TypeScript
+These changes were made primarily to support running multiple experiment configurations in parallel from a single codebase by selecting different hyperparameter objects from `hparams.py`. This makes it easier to run and track experiments with different loss settings or hyperparameter configurations in parallel.
 
-#### Step 1: Install dependencies
+- Updated training files (`wav2lip_train.py`, `hq_wav2lip_train.py`, `wav2lip_train_student.py`) and `audio.py` to load specified `hparam` objects from `hparams.py`, enabling running of a configuration without code changes.
+- Updated `hparams.py` to print and save a JSON snapshot of the selected `hparam` configuration for each training run, making experiments easier to track and reproduce.
+- Modified the training files to log all training and validation losses, generate loss plots, and save plots and metrics at every checkpoint so parallel runs can be compared consistently.
+- Added logic to `wav2lip_train_student.py` to compute each loss only when its corresponding weight in `hparams.py` is nonzero, allowing different loss configurations across simultaneous experiments.
 
-```bash
-npm i @sync.so/sdk
-```
+### Knowledge Distillation Changes
 
-#### Step 2: Make your first generation
+- Implemented a student model, trained from a pretrained Wav2Lip GAN teacher, based on the compression framework described in [A Unified Compression Framework for Efficient Speech-Driven Talking-Face Generation](https://arxiv.org/abs/2304.00471).
+- Added intermediate student and teacher feature extraction in `wav2lip.py` to support channel distillation.
+- Added channel distillation, TV, SSIM, style, and feature losses in `wav2lip_train_student.py` by using the [OMGD repository](https://github.com/bytedance/OMGD/tree/f2492a449498e6b88289666b02ddc47b2296465c) as a reference.
 
-Copy the following code into a file `quickstart.ts` and replace `YOUR_API_KEY_HERE` with your generated API key.
 
-```typescript
-// quickstart.ts
-import { SyncClient, SyncError } from "@sync.so/sdk";
+## Dataset
 
-// ---------- UPDATE API KEY ----------
-// Replace with your Sync.so API key
-const apiKey = "YOUR_API_KEY_HERE";
+This work uses the [Oxford-BBC Lip Reading Sentences 2 (LRS2)](https://www.robots.ox.ac.uk/~vgg/data/lip_reading/lrs2.html) dataset, which is also the dataset referenced by the original Wav2Lip training pipeline. For dataset details, see [Deep Audio-Visual Speech Recognition](https://arxiv.org/abs/1809.02108).
 
-// ----------[OPTIONAL] UPDATE INPUT VIDEO AND AUDIO URL ----------
-// URL to your source video
-const videoUrl = "https://assets.sync.so/docs/example-video.mp4";
-// URL to your audio file
-const audioUrl = "https://assets.sync.so/docs/example-audio.wav";
-// ----------------------------------------
+## Installation and Original Project
 
-const client = new SyncClient({ apiKey });
+This repository is based on the original [Wav2Lip repository](https://github.com/Rudrabha/Wav2Lip). For environment setup, dependency installation, pretrained models, and baseline training or inference instructions, please refer to the upstream Wav2Lip repository.
 
-async function main() {
-    console.log("Starting lip sync generation job...");
+My modifications were developed and tested with Python 3.8, and the package versions used for this work are listed in `requirements.txt` in this repository.
 
-    let jobId: string;
-    try {
-        const response = await client.generations.create({
-            input: [
-                {
-                    type: "video",
-                    url: videoUrl,
-                },
-                {
-                    type: "audio",
-                    url: audioUrl,
-                },
-            ],
-            model: "lipsync-2",
-            options: {
-                sync_mode: "cut_off",
-            },
-            outputFileName: "quickstart"
-        });
-        jobId = response.id;
-        console.log(`Generation submitted successfully, job id: ${jobId}`);
-    } catch (err) {
-        if (err instanceof SyncError) {
-            console.error(`create generation request failed with status code ${err.statusCode} and error ${JSON.stringify(err.body)}`);
-        } else {
-            console.error('An unexpected error occurred:', err);
-        }
-        return;
-    }
 
-    let generation;
-    let status;
-    while (status !== 'COMPLETED' && status !== 'FAILED') {
-        console.log(`polling status for generation ${jobId}...`);
-        try {
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            generation = await client.generations.get(jobId);
-            status = generation.status;
-        } catch (err) {
-            if (err instanceof SyncError) {
-                console.error(`polling failed with status code ${err.statusCode} and error ${JSON.stringify(err.body)}`);
-            } else {
-                console.error('An unexpected error occurred during polling:', err);
-            }
-            status = 'FAILED';
-        }
-    }
+## Training
 
-    if (status === 'COMPLETED') {
-        console.log(`generation ${jobId} completed successfully, output url: ${generation?.outputUrl}`);
-    } else {
-        console.log(`generation ${jobId} failed`);
-    }
-}
+Use the modified training pipeline to run student-model experiments with selected hyperparameter objects from `hparams.py`.
 
-main();
-```
-
-Run the script:
+Example workflow:
 
 ```bash
-npx tsx quickstart.ts -y
+python wav2lip_train_student.py \
+  --checkpoint_dir <checkpoint_dir> \
+  --hparams_config <hparams_config> \
+  --teacher_checkpoint_path <teacher_checkpoint_path> \
+  --data_root <data_root> \
+  --syncnet_checkpoint_path <syncnet_checkpoint_path>
 ```
 
-#### Step 3: Done!
 
-You should see the generated video URL in the terminal.
+## Inference
 
----
+After training, run inference with the student model using:
 
-## Next Steps
-
-Well done! You've just made your first lipsync generation with sync.so!
-
-Ready to unlock the full potential of lipsync? Dive into our interactive [Studio](https://sync.so/login) to experiment with all available models, or explore our [API Documentation](/api-reference) to take your lip-sync generations to the next level!
-
-## Contact
-- prady@sync.so
-- pavan@sync.so
-- sanjit@sync.so
-
-
-
-# Non Commercial Open-source Version
-
-This code is part of the paper: _A Lip Sync Expert Is All You Need for Speech to Lip Generation In the Wild_ published at ACM Multimedia 2020. 
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/a-lip-sync-expert-is-all-you-need-for-speech/lip-sync-on-lrs2)](https://paperswithcode.com/sota/lip-sync-on-lrs2?p=a-lip-sync-expert-is-all-you-need-for-speech)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/a-lip-sync-expert-is-all-you-need-for-speech/lip-sync-on-lrs3)](https://paperswithcode.com/sota/lip-sync-on-lrs3?p=a-lip-sync-expert-is-all-you-need-for-speech)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/a-lip-sync-expert-is-all-you-need-for-speech/lip-sync-on-lrw)](https://paperswithcode.com/sota/lip-sync-on-lrw?p=a-lip-sync-expert-is-all-you-need-for-speech)
-|📑 Original Paper|📰 Project Page|🌀 Demo|⚡ Live Testing|📔 Colab Notebook
-|:-:|:-:|:-:|:-:|:-:|
-[Paper](http://arxiv.org/abs/2008.10010) | [Project Page](http://cvit.iiit.ac.in/research/projects/cvit-projects/a-lip-sync-expert-is-all-you-need-for-speech-to-lip-generation-in-the-wild/) | [Demo Video](https://youtu.be/0fXaDCZNOJc) | [Interactive Demo](https://synclabs.so/) | [Colab Notebook](https://colab.research.google.com/drive/1tZpDWXz49W6wDcTprANRGLo2D_EbD5J8?usp=sharing) /[Updated Collab Notebook](https://colab.research.google.com/drive/1IjFW1cLevs6Ouyu4Yht4mnR4yeuMqO7Y#scrollTo=MH1m608OymLH)
- 
-![Logo](https://drive.google.com/uc?export=view&id=1Wn0hPmpo4GRbCIJR8Tf20Akzdi1qjjG9)
-----------
-**Highlights**
-----------
- - Weights of the visual quality disc has been updated in readme!
- - Lip-sync videos to any target speech with high accuracy :100:. Try our [interactive demo](https://sync.so/).
- - :sparkles: Works for any identity, voice, and language. Also works for CGI faces and synthetic voices.
- - Complete training code, inference code, and pretrained models are available :boom:
- - Or, quick-start with the Google Colab Notebook: [Link](https://colab.research.google.com/drive/1tZpDWXz49W6wDcTprANRGLo2D_EbD5J8?usp=sharing). Checkpoints and samples are available in a Google Drive [folder](https://drive.google.com/drive/folders/1I-0dNLfFOSFwrfqjNa-SXuwaURHE5K4k?usp=sharing) as well. There is also a [tutorial video](https://www.youtube.com/watch?v=Ic0TBhfuOrA) on this, courtesy of [What Make Art](https://www.youtube.com/channel/UCmGXH-jy0o2CuhqtpxbaQgA). Also, thanks to [Eyal Gruss](https://eyalgruss.com), there is a more accessible [Google Colab notebook](https://j.mp/wav2lip) with more useful features. A tutorial collab notebook is present at this [link](https://colab.research.google.com/drive/1IjFW1cLevs6Ouyu4Yht4mnR4yeuMqO7Y#scrollTo=MH1m608OymLH).  
- - :fire: :fire: Several new, reliable evaluation benchmarks and metrics [[`evaluation/` folder of this repo]](https://github.com/Rudrabha/Wav2Lip/tree/master/evaluation) released. Instructions to calculate the metrics reported in the paper are also present.
---------
-**Disclaimer**
---------
-All results from this open-source code or our [demo website](https://bhaasha.iiit.ac.in/lipsync) should only be used for research/academic/personal purposes only. As the models are trained on the <a href="http://www.robots.ox.ac.uk/~vgg/data/lip_reading/lrs2.html">LRS2 dataset</a>, any form of commercial use is strictly prohibited. For commercial requests please contact us directly!
-Prerequisites
--------------
-- `Python 3.6` 
-- ffmpeg: `sudo apt-get install ffmpeg`
-- Install necessary packages using `pip install -r requirements.txt`. Alternatively, instructions for using a docker image is provided [here](https://gist.github.com/xenogenesi/e62d3d13dadbc164124c830e9c453668). Have a look at [this comment](https://github.com/Rudrabha/Wav2Lip/issues/131#issuecomment-725478562) and comment on [the gist](https://gist.github.com/xenogenesi/e62d3d13dadbc164124c830e9c453668) if you encounter any issues. 
-- Face detection [pre-trained model](https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth) should be downloaded to `face_detection/detection/sfd/s3fd.pth`. Alternative [link](https://iiitaphyd-my.sharepoint.com/:u:/g/personal/prajwal_k_research_iiit_ac_in/EZsy6qWuivtDnANIG73iHjIBjMSoojcIV0NULXV-yiuiIg?e=qTasa8) if the above does not work.
-Getting the weights
-----------
-| Model  | Description |  Link to the model | 
-| :-------------: | :---------------: | :---------------: |
-| Wav2Lip  | Highly accurate lip-sync | [Link](https://drive.google.com/drive/folders/153HLrqlBNxzZcHi17PEvP09kkAfzRshM?usp=share_link)  |
-| Wav2Lip + GAN  | Slightly inferior lip-sync, but better visual quality | [Link](https://drive.google.com/file/d/15G3U08c8xsCkOqQxE38Z2XXDnPcOptNk/view?usp=share_link) |
-
-
-Lip-syncing videos using the pre-trained models (Inference)
--------
-You can lip-sync any video to any audio:
 ```bash
-python inference.py --checkpoint_path <ckpt> --face <video.mp4> --audio <an-audio-source> 
+python inference_student.py \
+  --checkpoint_path <ckpt> \
+  --hparams_config <hparams_config> \
+  --face <video.mp4> \
+  --audio <an-audio-source>
 ```
-The result is saved (by default) in `results/result_voice.mp4`. You can specify it as an argument,  similar to several other available options. The audio source can be any file supported by `FFMPEG` containing audio data: `*.wav`, `*.mp3` or even a video file, from which the code will automatically extract the audio.
-##### Tips for better results:
-- Experiment with the `--pads` argument to adjust the detected face bounding box. Often leads to improved results. You might need to increase the bottom padding to include the chin region. E.g. `--pads 0 20 0 0`.
-- If you see the mouth position dislocated or some weird artifacts such as two mouths, then it can be because of over-smoothing the face detections. Use the `--nosmooth` argument and give it another try. 
-- Experiment with the `--resize_factor` argument, to get a lower-resolution video. Why? The models are trained on faces that were at a lower resolution. You might get better, visually pleasing results for 720p videos than for 1080p videos (in many cases, the latter works well too). 
-- The Wav2Lip model without GAN usually needs more experimenting with the above two to get the most ideal results, and sometimes, can give you a better result as well.
-Preparing LRS2 for training
-----------
-Our models are trained on LRS2. See [here](#training-on-datasets-other-than-lrs2) for a few suggestions regarding training on other datasets.
-##### LRS2 dataset folder structure
-```
-data_root (mvlrs_v1)
-├── main, pretrain (we use only main folder in this work)
-|	├── list of folders
-|	│   ├── five-digit numbered video IDs ending with (.mp4)
-```
-Place the LRS2 filelists (train, val, test) `.txt` files in the `filelists/` folder.
-##### Preprocess the dataset for fast training
-```bash
-python preprocess.py --data_root data_root/main --preprocessed_root lrs2_preprocessed/
-```
-Additional options like `batch_size` and the number of GPUs to use in parallel to use can also be set.
-##### Preprocessed LRS2 folder structure
-```
-preprocessed_root (lrs2_preprocessed)
-├── list of folders
-|	├── Folders with five-digit numbered video IDs
-|	│   ├── *.jpg
-|	│   ├── audio.wav
-```
-Train!
-----------
-There are two major steps: (i) Train the expert lip-sync discriminator, (ii) Train the Wav2Lip model(s).
-##### Training the expert discriminator
-You can download [the pre-trained weights](#getting-the-weights) if you want to skip this step. To train it:
-```bash
-python color_syncnet_train.py --data_root lrs2_preprocessed/ --checkpoint_dir <folder_to_save_checkpoints>
-```
-##### Training the Wav2Lip models
-You can either train the model without the additional visual quality discriminator (< 1 day of training) or use the discriminator (~2 days). For the former, run: 
-```bash
-python wav2lip_train.py --data_root lrs2_preprocessed/ --checkpoint_dir <folder_to_save_checkpoints> --syncnet_checkpoint_path <path_to_expert_disc_checkpoint>
-```
-To train with the visual quality discriminator, you should run `hq_wav2lip_train.py` instead. The arguments for both files are similar. In both cases, you can resume training as well. Look at `python wav2lip_train.py --help` for more details. You can also set additional less commonly-used hyper-parameters at the bottom of the `hparams.py` file.
-Training on datasets other than LRS2
-------------------------------------
-Training on other datasets might require modifications to the code. Please read the following before you raise an issue:
-- You might not get good results by training/fine-tuning on a few minutes of a single speaker. This is a separate research problem, to which we do not have a solution yet. Thus, we would most likely not be able to resolve your issue. 
-- You must train the expert discriminator for your own dataset before training Wav2Lip.
-- If it is your own dataset downloaded from the web, in most cases, needs to be sync-corrected.
-- Be mindful of the FPS of the videos of your dataset. Changes to FPS would need significant code changes. 
-- The expert discriminator's eval loss should go down to ~0.25 and the Wav2Lip eval sync loss should go down to ~0.2 to get good results. 
-When raising an issue on this topic, please let us know that you are aware of all these points.
-We have an HD model trained on a dataset allowing commercial usage. The size of the generated face will be 192 x 288 in our new model.
-Evaluation
-----------
-Please check the `evaluation/` folder for the instructions.
-License and Citation
-----------
-This repository can only be used for personal/research/non-commercial purposes. However, for commercial requests, please contact us directly at rudrabha@synclabs.so or prajwal@synclabs.so. We have a turn-key hosted API with new and improved lip-syncing models here: https://synclabs.so/
-The size of the generated face will be 192 x 288 in our new models. Please cite the following paper if you use this repository:
-```
-@inproceedings{10.1145/3394171.3413532,
-author = {Prajwal, K R and Mukhopadhyay, Rudrabha and Namboodiri, Vinay P. and Jawahar, C.V.},
-title = {A Lip Sync Expert Is All You Need for Speech to Lip Generation In the Wild},
-year = {2020},
-isbn = {9781450379885},
-publisher = {Association for Computing Machinery},
-address = {New York, NY, USA},
-url = {https://doi.org/10.1145/3394171.3413532},
-doi = {10.1145/3394171.3413532},
-booktitle = {Proceedings of the 28th ACM International Conference on Multimedia},
-pages = {484–492},
-numpages = {9},
-keywords = {lip sync, talking face generation, video generation},
-location = {Seattle, WA, USA},
-series = {MM '20}
-}
-```
-Acknowledgments
-----------
-Parts of the code structure are inspired by this [TTS repository](https://github.com/r9y9/deepvoice3_pytorch). We thank the author for this wonderful code. The code for Face Detection has been taken from the [face_alignment](https://github.com/1adrianb/face-alignment) repository. We thank the authors for releasing their code and models. We thank [zabique](https://github.com/zabique) for the tutorial collab notebook.
-## Acknowledgements
- - [Awesome Readme Templates](https://awesomeopensource.com/project/elangosundar/awesome-README-templates)
- - [Awesome README](https://github.com/matiassingers/awesome-readme)
- - [How to write a Good readme](https://bulldogjob.com/news/449-how-to-write-a-good-readme-for-your-github-project)
+
+## References
+
+- Wav2Lip paper: [A Lip Sync Expert Is All You Need for Speech to Lip Generation In the Wild](https://arxiv.org/abs/2008.10010)
+- Wav2Lip implementation: [Wav2Lip repository](https://github.com/Rudrabha/Wav2Lip)
+- Knowledge distillation paper: [A Unified Compression Framework for Efficient Speech-Driven Talking-Face Generation](https://arxiv.org/abs/2304.00471)
+- Losses paper: [Online Multi-Granularity Distillation for GAN Compression](https://arxiv.org/abs/2108.06908)
+- Losses implementation: [OMGD GitHub repository](https://github.com/bytedance/OMGD/tree/f2492a449498e6b88289666b02ddc47b2296465c)
+- Dataset page: [The Oxford-BBC Lip Reading Sentences 2 (LRS2)](https://www.robots.ox.ac.uk/~vgg/data/lip_reading/lrs2.html)
+- Dataset paper: [Lip Reading Sentences in the Wild](https://arxiv.org/abs/1809.02108)
+
+## Usage Notice
+
+This repository is shared for portfolio, research, and educational purposes. The original Wav2Lip open-source repository states that the code is for personal, research, and non-commercial use only, and that restriction should be observed here as well.

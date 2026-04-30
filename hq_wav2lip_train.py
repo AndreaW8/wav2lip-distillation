@@ -12,11 +12,14 @@ from torch import optim
 import torch.backends.cudnn as cudnn
 from torch.utils import data as data_utils
 import numpy as np
+import matplotlib.pyplot as plt
 
 from glob import glob
 
 import os, random, cv2, argparse
-from hparams import hparams, get_image_list
+import json
+# from hparams import hparams, get_image_list
+from hparams import get_image_list, hparams_debug_string
 
 parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model WITH the visual quality discriminator')
 
@@ -28,7 +31,12 @@ parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expe
 parser.add_argument('--checkpoint_path', help='Resume generator from this checkpoint', default=None, type=str)
 parser.add_argument('--disc_checkpoint_path', help='Resume quality disc from this checkpoint', default=None, type=str)
 
+parser.add_argument('--hparams_config', help='Which hparams config to use (e.g., hparams_96, hparams_256)', default='hparams', type=str)
+
 args = parser.parse_args()
+
+hparams = getattr(__import__('hparams'), args.hparams_config)
+audio.set_hparams(hparams) # need to pass hparams to audio.py!
 
 
 global_step = 0
@@ -203,6 +211,13 @@ def train(device, model, disc, train_data_loader, test_data_loader, optimizer, d
           checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
     global global_step, global_epoch
     resumed_step = global_step
+    
+    train_l1loss_curve = []
+    train_sync_loss_curve = []
+    train_loss_curve = []
+    train_loss_time_steps = [] # need to track what steps I record train_loss
+    val_loss_curve = []
+    val_loss_time_steps = [] # need to track what steps I record val_loss
 
     while global_epoch < nepochs:
         print('Starting Epoch: {}'.format(global_epoch))
@@ -260,6 +275,20 @@ def train(device, model, disc, train_data_loader, test_data_loader, optimizer, d
 
             if global_step % checkpoint_interval == 0:
                 save_sample_images(x, g, gt, global_step, checkpoint_dir)
+                
+                
+            # save training loss data!!!!!
+            train_l1loss_curve.append(l1loss.detach().cpu().item())
+            
+            if sync_loss == 0.0:
+                train_sync_loss_curve.append(sync_loss)
+            else:
+                train_sync_loss_curve.append(sync_loss.detach().cpu().item())
+                
+            train_loss_curve.append(loss.detach().cpu().item())
+            
+            train_loss_time_steps.append(global_step)
+            
 
             # Logs
             global_step += 1
@@ -276,20 +305,46 @@ def train(device, model, disc, train_data_loader, test_data_loader, optimizer, d
             else:
                 running_perceptual_loss += 0.
 
-            if global_step == 1 or global_step % checkpoint_interval == 0:
-                save_checkpoint(
-                    model, optimizer, global_step, checkpoint_dir, global_epoch)
-                save_checkpoint(disc, disc_optimizer, global_step, checkpoint_dir, global_epoch, prefix='disc_')
+            # if global_step == 1 or global_step % checkpoint_interval == 0:
+            #     save_checkpoint(
+            #         model, optimizer, global_step, checkpoint_dir, global_epoch)
+            #     save_checkpoint(disc, disc_optimizer, global_step, checkpoint_dir, global_epoch, prefix='disc_')
 
 
             if global_step % hparams.eval_interval == 0:
                 with torch.no_grad():
                     average_sync_loss = eval_model(test_data_loader, global_step, device, model, disc)
+                    val_loss_curve.append(average_sync_loss)
+                    val_loss_time_steps.append(global_step)
 
                     if average_sync_loss < .75:
                         hparams.set_hparam('syncnet_wt', 0.03)
+                        
+                        
+            if global_step == 1 or global_step % checkpoint_interval == 0:
+                save_checkpoint(
+                    model, optimizer, global_step, checkpoint_dir, global_epoch)
+                save_checkpoint(disc, disc_optimizer, global_step, checkpoint_dir, global_epoch, prefix='disc_')
+                
+                # print("train_l1loss:", train_l1loss_curve)
+                # print("train_sync_loss:", train_sync_loss_curve)
+                # print("train_loss:", train_loss_curve)
+                # print("val_loss:", val_loss_curve)
+                # print()
 
-            prog_bar.set_description('L1: {}, Sync: {}, Percep: {} | Fake: {}, Real: {}'.format(running_l1_loss / (step + 1),
+                plt.figure()
+                plt.plot(train_loss_time_steps, train_loss_curve, marker='+', label='Train Loss')
+                plt.plot(train_loss_time_steps, train_sync_loss_curve, marker='o', label='Train sync_loss')
+                plt.plot(val_loss_time_steps, val_loss_curve, marker='s', label='Validation Loss')
+                plt.title('Loss vs. Steps \n steps per epoch: %s' % len(train_data_loader))
+                plt.xlabel('Steps')
+                plt.ylabel('Loss')
+                plt.legend()
+                plt.savefig(checkpoint_dir+"/checkpoint_loss_graph_step{:09d}.png".format(global_step)) # SAVE THAT PLOT!!! 
+                # plt.show()
+                
+
+            prog_bar.set_description('train: L1: {}, Sync: {}, Percep: {} | Fake: {}, Real: {}'.format(running_l1_loss / (step + 1),
                                                                                         running_sync_loss / (step + 1),
                                                                                         running_perceptual_loss / (step + 1),
                                                                                         running_disc_fake_loss / (step + 1),
@@ -343,7 +398,7 @@ def eval_model(test_data_loader, global_step, device, model, disc):
 
             if step > eval_steps: break
 
-        print('L1: {}, Sync: {}, Percep: {} | Fake: {}, Real: {}'.format(sum(running_l1_loss) / len(running_l1_loss),
+        print('test:  L1: {}, Sync: {}, Percep: {} | Fake: {}, Real: {}'.format(sum(running_l1_loss) / len(running_l1_loss),
                                                             sum(running_sync_loss) / len(running_sync_loss),
                                                             sum(running_perceptual_loss) / len(running_perceptual_loss),
                                                             sum(running_disc_fake_loss) / len(running_disc_fake_loss),
@@ -408,6 +463,15 @@ if __name__ == "__main__":
     test_data_loader = data_utils.DataLoader(
         test_dataset, batch_size=hparams.batch_size,
         num_workers=4)
+    
+    
+    steps_per_epoch = int(np.ceil(len(train_dataset) / hparams.batch_size))
+    print("len(train_dataset):", len(train_dataset))
+    print("Steps per epoch:", steps_per_epoch)
+    
+    # print out hparams
+    print(hparams_debug_string(hparams))
+    
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -435,6 +499,10 @@ if __name__ == "__main__":
 
     if not os.path.exists(checkpoint_dir):
         os.mkdir(checkpoint_dir)
+        
+    #save hparams file
+    with open(checkpoint_dir+'/hparams.json', 'w') as f:
+        json.dump(hparams.data, f, indent=4)
 
     # Train!
     train(device, model, disc, train_data_loader, test_data_loader, optimizer, disc_optimizer,

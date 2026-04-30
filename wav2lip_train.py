@@ -11,11 +11,16 @@ from torch import optim
 import torch.backends.cudnn as cudnn
 from torch.utils import data as data_utils
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 
 from glob import glob
 
 import os, random, cv2, argparse
-from hparams import hparams, get_image_list
+import json
+# from hparams import hparams, get_image_list
+from hparams import get_image_list, hparams_debug_string
+torch.set_float32_matmul_precision('high') # for speed
 
 parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model without the visual quality discriminator')
 
@@ -26,7 +31,12 @@ parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expe
 
 parser.add_argument('--checkpoint_path', help='Resume from this checkpoint', default=None, type=str)
 
+parser.add_argument('--hparams_config', help='Which hparams config to use (e.g., hparams_96, hparams_256)', default='hparams', type=str)
+
 args = parser.parse_args()
+
+hparams = getattr(__import__('hparams'), args.hparams_config)
+audio.set_hparams(hparams) # need to pass hparams to audio.py!
 
 
 global_step = 0
@@ -134,11 +144,15 @@ class Dataset(object):
             if wrong_window is None:
                 continue
 
+            #CHANGE - use mel spectrograms instead  # for speed  # NEED preproccessed mel files for this to work
             try:
-                wavpath = join(vidname, "audio.wav")
-                wav = audio.load_wav(wavpath, hparams.sample_rate)
+                #wavpath = join(vidname, "audio.wav")
+                #wav = audio.load_wav(wavpath, hparams.sample_rate)
+                #orig_mel = audio.melspectrogram(wav).T
+                
+                melpath = join(vidname, 'mel.npy')
+                orig_mel = np.load(melpath).T
 
-                orig_mel = audio.melspectrogram(wav).T
             except Exception as e:
                 continue
 
@@ -202,6 +216,17 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
 
     global global_step, global_epoch
     resumed_step = global_step
+    
+    train_l1loss_curve = []
+    train_sync_loss_curve = []
+    train_running_l1loss_curve = []
+    train_running_sync_loss_curve = []
+    train_loss_curve = []
+    train_loss_time_steps = [] # need to track what steps I record train_loss
+    val_sync_loss_curve = []
+    val_recon_loss_curve = []
+    val_loss_time_steps = [] # need to track what steps I record val_loss
+    
  
     while global_epoch < nepochs:
         print('Starting Epoch: {}'.format(global_epoch))
@@ -229,12 +254,25 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             loss = hparams.syncnet_wt * sync_loss + (1 - hparams.syncnet_wt) * l1loss
             loss.backward()
             optimizer.step()
+            
 
             if global_step % checkpoint_interval == 0:
                 save_sample_images(x, g, gt, global_step, checkpoint_dir)
 
             global_step += 1
             cur_session_steps = global_step - resumed_step
+            
+            # save training loss data!!!!!
+            train_l1loss_curve.append(l1loss.detach().cpu().item())
+            
+            if sync_loss == 0.0:
+                train_sync_loss_curve.append(sync_loss)
+            else:
+                train_sync_loss_curve.append(sync_loss.detach().cpu().item())
+                
+            train_loss_curve.append(loss.detach().cpu().item())
+            
+            train_loss_time_steps.append(global_step)
 
             running_l1_loss += l1loss.item()
             if hparams.syncnet_wt > 0.:
@@ -242,18 +280,94 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             else:
                 running_sync_loss += 0.
 
-            if global_step == 1 or global_step % checkpoint_interval == 0:
-                save_checkpoint(
-                    model, optimizer, global_step, checkpoint_dir, global_epoch)
+            train_running_l1loss_curve.append(running_l1_loss)
+            train_running_sync_loss_curve.append(running_sync_loss)
+
+#             if global_step == 1 or global_step % checkpoint_interval == 0:
+#                 save_checkpoint(
+#                     model, optimizer, global_step, checkpoint_dir, global_epoch)
 
             if global_step == 1 or global_step % hparams.eval_interval == 0:
                 with torch.no_grad():
-                    average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+                    average_sync_loss, averaged_recon_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+                    val_sync_loss_curve.append(average_sync_loss)
+                    val_recon_loss_curve.append(averaged_recon_loss)
+                    val_loss_time_steps.append(global_step)
 
                     if average_sync_loss < .75:
                         hparams.set_hparam('syncnet_wt', 0.01) # without image GAN a lesser weight is sufficient
+                        
+            if global_step == 1 or global_step % checkpoint_interval == 0:
+                save_checkpoint(
+                    model, optimizer, global_step, checkpoint_dir, global_epoch)
+                
+                # print("train_l1loss:", train_l1loss_curve)
+                # print("train_sync_loss:", train_sync_loss_curve)
+                # print("train_loss:", train_loss_curve)
+                # print("val_sync_loss_curve:", val_sync_loss_curve)
+                # print()
 
-            prog_bar.set_description('L1: {}, Sync Loss: {}'.format(running_l1_loss / (step + 1),
+                plt.figure()
+                plt.plot(train_loss_time_steps, train_loss_curve, marker='+', label='Train Loss')
+                plt.plot(train_loss_time_steps, train_sync_loss_curve, marker='o', label='Train sync_loss')
+                plt.plot(val_loss_time_steps, val_sync_loss_curve, marker='s', label='Validation Loss')
+                plt.title('Loss vs. Steps \n steps per epoch: %s' % len(train_data_loader))
+                plt.xlabel('Steps')
+                plt.ylabel('Loss')
+                plt.legend()
+                plt.savefig(checkpoint_dir+"/checkpoint_loss_graph_step{:09d}.png".format(global_step)) # SAVE THAT PLOT!!! 
+                # plt.show()
+
+                train_loss_data_dict = { # save last checkpoint window of data
+                    'train_loss_time_steps': train_loss_time_steps[-checkpoint_interval:],
+                    'train_loss_curve': train_loss_curve[-checkpoint_interval:],
+                    'train_sync_loss_curve': train_sync_loss_curve[-checkpoint_interval:],
+                    'train_l1loss_curve': train_l1loss_curve[-checkpoint_interval:],
+                    'train_running_l1loss_curve': train_running_l1loss_curve[-checkpoint_interval:],
+                    'train_running_sync_loss_curve': train_running_sync_loss_curve[-checkpoint_interval:],
+                }
+                
+                num_o_eval_pts = checkpoint_interval // hparams.eval_interval
+                
+                val_loss_data_dict = {
+                    'val_loss_time_steps': val_loss_time_steps[-num_o_eval_pts:],
+                    'val_sync_loss_curve': val_sync_loss_curve[-num_o_eval_pts:],
+                    'val_recon_loss_curve':val_recon_loss_curve[-num_o_eval_pts:],
+                }
+
+                train_loss_df = pd.DataFrame(train_loss_data_dict)
+                val_loss_df = pd.DataFrame(val_loss_data_dict)
+                
+
+                # # Save the data to a JSON file
+                # with open(checkpoint_dir+"/checkpoint_loss_graph_step{:09d}.json".format(global_step), 'w') as f:
+                #     json.dump(loss_data_dict, f, indent=4)
+                    
+                    
+                if not os.path.exists(checkpoint_dir+"/train_loss_data.csv"):
+                    train_loss_df.to_csv(checkpoint_dir+"/train_loss_data.csv", index=False)
+                else:
+                    train_loss_df.to_csv(checkpoint_dir+"/train_loss_data.csv", mode='a', header=False, index=False) # mode='a' means append data!!! YAY!!
+                    
+                if not os.path.exists(checkpoint_dir+"/val_loss_data.csv"):
+                    val_loss_df.to_csv(checkpoint_dir+"/val_loss_data.csv", index=False)
+                else:
+                    val_loss_df.to_csv(checkpoint_dir+"/val_loss_data.csv", mode='a', header=False, index=False) # mode='a' means append data!!! YAY!!
+                    
+                
+                # # Empty all loss liz. This way we only append new data! 
+                # train_l1loss_curve = []
+                # train_sync_loss_curve = []
+                # train_running_l1loss_curve = []
+                # train_running_sync_loss_curve = []
+                # train_loss_curve = []
+                # train_loss_time_steps = [] # need to track what steps I record train_loss
+                # val_sync_loss_curve = []
+                # val_recon_loss_curve = []
+                # val_loss_time_steps = [] # need to track what steps I record val_loss
+
+
+            prog_bar.set_description('train: L1: {}, Sync Loss: {}'.format(running_l1_loss / (step + 1),
                                                                     running_sync_loss / (step + 1)))
 
         global_epoch += 1
@@ -287,9 +401,10 @@ def eval_model(test_data_loader, global_step, device, model, checkpoint_dir):
                 averaged_sync_loss = sum(sync_losses) / len(sync_losses)
                 averaged_recon_loss = sum(recon_losses) / len(recon_losses)
 
-                print('L1: {}, Sync loss: {}'.format(averaged_recon_loss, averaged_sync_loss))
+                # print('eval_model:')
+                print('test:  L1: {}, Sync loss: {}'.format(averaged_recon_loss, averaged_sync_loss))
 
-                return averaged_sync_loss
+                return averaged_sync_loss, averaged_recon_loss
 
 def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch):
 
@@ -309,9 +424,22 @@ def _load(checkpoint_path):
     if use_cuda:
         checkpoint = torch.load(checkpoint_path)
     else:
-        checkpoint = torch.load(checkpoint_path,
-                                map_location=lambda storage, loc: storage)
+#        checkpoint = torch.load(checkpoint_path,
+#                                map_location=lambda storage, loc: storage)
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
     return checkpoint
+
+#def _load(checkpoint_path):
+#    if use_cuda:
+#        map_loc = torch.device('cuda')
+#    else:
+#        map_loc = torch.device('cpu')
+#    try:
+#        # For TorchScript models (.pt, zip archive), use torch.jit.load
+#        return torch.jit.load(checkpoint_path, map_location=map_loc)
+#    except Exception:
+#        # For regular PyTorch checkpoints, fallback
+#        return torch.load(checkpoint_path, map_location=map_loc)
 
 def load_checkpoint(path, model, optimizer, reset_optimizer=False, overwrite_global_states=True):
     global global_step
@@ -348,7 +476,14 @@ if __name__ == "__main__":
 
     test_data_loader = data_utils.DataLoader(
         test_dataset, batch_size=hparams.batch_size,
-        num_workers=4)
+        num_workers=hparams.num_workers)
+    
+    steps_per_epoch = int(np.ceil(len(train_dataset) / hparams.batch_size))
+    print("len(train_dataset):", len(train_dataset))
+    print("Steps per epoch:", steps_per_epoch)
+    
+    # print out hparams
+    print(hparams_debug_string(hparams))
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -364,8 +499,16 @@ if __name__ == "__main__":
         
     load_checkpoint(args.syncnet_checkpoint_path, syncnet, None, reset_optimizer=True, overwrite_global_states=False)
 
+    # compile for speed - compile AFTER loading models
+    # may want to comment this out when developing your code. It takes time up front to complie the code. 
+    model = torch.compile(model)
+
     if not os.path.exists(checkpoint_dir):
         os.mkdir(checkpoint_dir)
+        
+    #save hparams file
+    with open(checkpoint_dir+'/hparams.json', 'w') as f:
+        json.dump(hparams.data, f, indent=4)
 
     # Train!
     train(device, model, train_data_loader, test_data_loader, optimizer,

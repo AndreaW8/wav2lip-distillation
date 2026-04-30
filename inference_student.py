@@ -1,4 +1,3 @@
-
 from os import listdir, path
 import numpy as np
 import scipy, cv2, os, sys, argparse, audio
@@ -6,7 +5,9 @@ import json, subprocess, random, string
 from tqdm import tqdm
 from glob import glob
 import torch, face_detection
-from models import Wav2Lip
+from models import Wav2Lip_student, Wav2Lip
+import platform
+import importlib
 
 parser = argparse.ArgumentParser(description='Inference code to lip-sync videos in the wild using Wav2Lip models')
 
@@ -36,15 +37,31 @@ parser.add_argument('--resize_factor', default=1, type=int,
 			help='Reduce the resolution by this factor. Sometimes, best results are obtained at 480p or 720p')
 
 parser.add_argument('--crop', nargs='+', type=int, default=[0, -1, 0, -1], 
-					help='Crop video to a smaller region (top, bottom, left, right). Applied after resize_factor arg. ' 
+					help='Crop video to a smaller region (top, bottom, left, right). Applied after resize_factor and rotate arg. ' 
 					'Useful if multiple face present. -1 implies the value will be auto-inferred based on height, width')
 
 parser.add_argument('--box', nargs='+', type=int, default=[-1, -1, -1, -1], 
 					help='Specify a constant bounding box for the face. Use only as a last resort if the face is not detected.'
 					'Also, might work only if the face is not moving around much. Syntax: (top, bottom, left, right).')
 
+parser.add_argument('--rotate', default=False, action='store_true',
+					help='Sometimes videos taken from a phone can be flipped 90deg. If true, will flip video right by 90deg.'
+					'Use if you get a flipped result, despite feeding a normal looking video')
+
+parser.add_argument('--nosmooth', default=False, action='store_true',
+					help='Prevent smoothing face detections over a short temporal window')
+
+#CHANGE------------
+parser.add_argument('--hparams_config', help='Which hparams config to use (e.g., hparams_96, hparams_256)', default='hparams', type=str)
+# parser.add_argument('--model_file', help='wav2lip.py model variant to use', default='wav2lip', type=str)
+
 args = parser.parse_args()
 args.img_size = 96
+
+#CHANGE----------------
+hparams = getattr(__import__('hparams'), args.hparams_config)
+audio.set_hparams(hparams)                      # need to pass hparams to audio.py!
+
 
 if os.path.isfile(args.face) and args.face.split('.')[1] in ['jpg', 'png', 'jpeg']:
 	args.static = True
@@ -81,6 +98,7 @@ def face_detect(images):
 	pady1, pady2, padx1, padx2 = args.pads
 	for rect, image in zip(predictions, images):
 		if rect is None:
+			cv2.imwrite('temp/faulty_frame.jpg', image) # check this frame where the face was not detected.
 			raise ValueError('Face not detected! Ensure the video contains a face in all the frames.')
 
 		y1 = max(0, rect[1] - pady1)
@@ -90,7 +108,8 @@ def face_detect(images):
 		
 		results.append([x1, y1, x2, y2])
 
-	boxes = get_smoothened_boxes(np.array(results), T=5)
+	boxes = np.array(results)
+	if not args.nosmooth: boxes = get_smoothened_boxes(boxes, T=5)
 	results = [[image[y1: y2, x1:x2], (y1, y2, x1, x2)] for image, (x1, y1, x2, y2) in zip(images, boxes)]
 
 	del detector
@@ -149,21 +168,28 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('Using {} for inference.'.format(device))
 
 def _load(checkpoint_path):
-	if device == 'cuda':
-		checkpoint = torch.load(checkpoint_path)
-	else:
-		checkpoint = torch.load(checkpoint_path,
-								map_location=lambda storage, loc: storage)
-	return checkpoint
+    use_cuda = torch.cuda.is_available()
+    if use_cuda:
+        checkpoint = torch.load(checkpoint_path)
+    else:
+#        checkpoint = torch.load(checkpoint_path,
+#                                map_location=lambda storage, loc: storage)
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+    return checkpoint
 
 def load_model(path):
-	model = Wav2Lip()
+	# model = Wav2Lip()
+	model = Wav2Lip_student()
 	print("Load checkpoint from: {}".format(path))
 	checkpoint = _load(path)
 	s = checkpoint["state_dict"]
 	new_s = {}
 	for k, v in s.items():
-		new_s[k.replace('module.', '')] = v
+		#changes needed due to using compiled model
+		#new_s[k.replace('module.', '')] = v
+		new_key = k.replace('module.', '')
+		new_key = new_key.replace('_orig_mod.', '')
+		new_s[new_key]=v
 	model.load_state_dict(new_s)
 
 	model = model.to(device)
@@ -171,9 +197,7 @@ def load_model(path):
 
 def main():
 	if not os.path.isfile(args.face):
-		fnames = list(glob(os.path.join(args.face, '*.jpg')))
-		sorted_fnames = sorted(fnames, key=lambda f: int(os.path.basename(f).split('.')[0]))
-		full_frames = [cv2.imread(f) for f in sorted_fnames]
+		raise ValueError('--face argument must be a valid path to video/image file')
 
 	elif args.face.split('.')[1] in ['jpg', 'png', 'jpeg']:
 		full_frames = [cv2.imread(args.face)]
@@ -193,6 +217,9 @@ def main():
 				break
 			if args.resize_factor > 1:
 				frame = cv2.resize(frame, (frame.shape[1]//args.resize_factor, frame.shape[0]//args.resize_factor))
+
+			if args.rotate:
+				frame = cv2.rotate(frame, cv2.cv2.ROTATE_90_CLOCKWISE)
 
 			y1, y2, x1, x2 = args.crop
 			if x2 == -1: x2 = frame.shape[1]
@@ -224,6 +251,7 @@ def main():
 	while 1:
 		start_idx = int(i * mel_idx_multiplier)
 		if start_idx + mel_step_size > len(mel[0]):
+			mel_chunks.append(mel[:, len(mel[0]) - mel_step_size:])
 			break
 		mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
 		i += 1
@@ -249,7 +277,7 @@ def main():
 		mel_batch = torch.FloatTensor(np.transpose(mel_batch, (0, 3, 1, 2))).to(device)
 
 		with torch.no_grad():
-			pred = model(mel_batch, img_batch)
+			pred, *_ = model(mel_batch, img_batch)
 
 		pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.
 		
@@ -263,7 +291,7 @@ def main():
 	out.release()
 
 	command = 'ffmpeg -y -i {} -i {} -strict -2 -q:v 1 {}'.format(args.audio, 'temp/result.avi', args.outfile)
-	subprocess.call(command, shell=True)
+	subprocess.call(command, shell=platform.system() != 'Windows')
 
 if __name__ == '__main__':
 	main()
