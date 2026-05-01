@@ -1,6 +1,6 @@
 # Wav2Lip Knowledge Distillation
 
-This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) speech to lip sync model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip sync quality while reducing training cost and model complexity.
+This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) speech to lip sync model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip sync quality while reducing model size.
 
 ## Overview
 
@@ -23,8 +23,8 @@ The work draws on compression and distillation ideas from [A Unified Compression
 
 The two main benchmarks used in this work, LSE-D and LSE-C, were introduced by the original Wav2Lip work.
 
-- **LSE-D (LipSyncError Distance):** Measures the average error between generated and ground‑truth lip movements for a given audio file. A lower value indicates better sync between lip movements and speech.
-- **LSE-C (LipSyncError Confidence):** Measures audio–video alignment confidence. A higher value corresponds to more realistic lip movements.
+- **LSE-D (LipSyncError Distance):** Measures the average error between generated and ground truth lip movements for a given audio file. A lower value indicates better sync between lip movements and speech.
+- **LSE-C (LipSyncError Confidence):** Measures audio video alignment confidence. A higher value corresponds to more realistic lip movements.
 
 
 ### Results Highlights
@@ -39,7 +39,7 @@ The knowledge distillation setup successfully transferred knowledge from the Wav
        width="450">
 </p>
 
-The table above summarizes student models trained with different combinations of KD losses against the pretrained Wav2Lip models from the original  [Wav2Lip work](https://github.com/Rudrabha/Wav2Lip). Each row reports LSE-D (lower is better), LSE-C (higher is better), and the epoch where validation loss plateaued. Configurations that combined channel distillation with SSIM, feature, style, and TV losses achieved stronger lip-sync metrics and earlier plateau epochs than most single-loss models. All KD models include the sync loss, and the Wav2Lip model with GAN was used as the KD teacher model.
+The table above summarizes student models trained with different combinations of KD losses against the pretrained Wav2Lip models from the original [Wav2Lip work](https://github.com/Rudrabha/Wav2Lip). Each row reports LSE-D (lower is better), LSE-C (higher is better), and the epoch where validation loss plateaued. Configurations that combined channel distillation with SSIM, feature, style, and TV losses achieved stronger lip sync metrics than single loss models. All KD models include the sync loss, and the Wav2Lip model with GAN was used as the KD teacher model.
 
 #### Model outputs at 80 epochs
 
@@ -51,7 +51,7 @@ The table above summarizes student models trained with different combinations of
 
 #### Multi Loss Wins
 
-The best results came from **combining multiple losses together**. Models trained with channel distillation + SSIM + feature + style + TV losses achieved the strongest lip sync metrics (LSE-D and LSE-C scores) and reached stable validation loss.
+The best results came from **combining multiple losses together**. Models trained with channel distillation + SSIM + feature + style + TV losses achieved the strongest lip sync metrics (LSE-D and LSE-C scores).
 
 Sample frames comparing student outputs at 80 epochs showed that the full multi loss knowledge distillation setup produced faces that were structurally and texturally closer to the teacher outputs. For the better performing models, visual differences between student and teacher outputs were often subtle, suggesting that a more challenging dataset could better highlight the effects of different loss combinations.
 
@@ -61,11 +61,11 @@ When tested individually, single loss student models consistently struggled and 
 
 - **Channel distillation alone:** Failed to produce recognizable faces without output level guidance. Although it helps the student match the teacher's intermediate decoder feature channels and improves LSE-D/LSE-C when combined with other losses, it does not produce reasonable output faces on its own.
 
-- **Style loss only:** Created a light hatched pattern near the top of the face, showing that style information without stronger structural or output guidance can lead to distortions.
+- **Style loss alone:** Created a light hatched pattern near the top of the face.
 
 - **TV loss alone:** Drove the image toward a nearly uniform gray face, destroying facial features and leaving no meaningful face to evaluate with LSE-D or LSE-C. This suggests TV loss is more useful as a supporting loss than as a standalone objective.
 
-- **L1 to teacher or Ground Truth only:** Produced unstable training curves that bounced rather than decreased, indicating that L1 alone was not a sufficient learning signal. This configuration also underperformed visually.
+- **L1 to teacher or Ground Truth only:** Produced unstable training curves that bounced rather than decreased, indicating that L1 alone was not a sufficient learning signal. These configurations also underperformed visually.
 
 
 ## What I Changed
