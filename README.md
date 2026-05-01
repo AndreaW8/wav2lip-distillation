@@ -13,7 +13,7 @@ This work modifies the original Wav2Lip training and inference pipeline to suppo
 - **Feature loss:** Minimizes the L1 difference between the activations of specific layers in a pretrained VGG network. This is encouraging the student’s output to be perceptually similar to the teacher’s.
 - **Style loss:** Compares the L1 loss of Gram matrices for the same VGG features. It encourages similarity in style characteristics such as color and textures.
 - **Total variation (TV) loss:** Measures the internal variation of an image to reduce noise.  On its own it will encourage all pixels to be the same and will result in a gray image with no face.
-- **L1 loss to ground truth:** Compares the student’s output directly to the ground truth video frames with an L1 pixel loss.
+- **L1 loss to ground truth:** Compares the student’s output directly to the ground truth with an L1 loss.
 - **L1 loss to teacher output:** Compares the student’s output to the teacher’s output with an L1 loss.
 
 The work draws on compression and distillation ideas from [A Unified Compression Framework for Efficient Speech-Driven Talking-Face Generation](https://arxiv.org/abs/2304.00471) and uses the [OMGD repository](https://github.com/bytedance/OMGD/tree/f2492a449498e6b88289666b02ddc47b2296465c) as a reference for implementing losses described in [Online Multi-Granularity Distillation for GAN Compression](https://arxiv.org/abs/2108.06908).
