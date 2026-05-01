@@ -1,6 +1,6 @@
 # Wav2Lip Knowledge Distillation
 
-This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) speech to lip sync model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip-sync quality while reducing training cost and model complexity.
+This repository extends the original [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) speech to lip sync model with knowledge distillation. This work investigates how different loss terms affect the training and output of a smaller student model using a larger, frozen pretrained Wav2Lip GAN teacher, with the goal of maintaining lip sync quality while reducing training cost and model complexity.
 
 ## Overview
 
@@ -29,7 +29,7 @@ The two main benchmarks used in this work, LSE-D and LSE-C, were introduced by t
 
 ### Results Highlights
 
-The knowledge distillation setup successfully transferred knowledge from the Wav2Lip GAN teacher to a smaller student model, achieving comparable lip-sync quality with far fewer training epochs when multiple loss terms were combined. These student models were trained for 80 epochs, compared to the teacher model which was trained for 300 epochs.
+The knowledge distillation setup successfully transferred knowledge from the Wav2Lip GAN teacher to a smaller student model, achieving comparable lip sync quality with far fewer training epochs when multiple loss terms were combined. These student models were trained for 80 epochs, compared to the teacher model which was trained for 300 epochs.
 
 #### Quantitative Metrics
 
@@ -51,7 +51,7 @@ The table above summarizes student models trained with different combinations of
 
 #### Multi Loss Wins
 
-The best results came from **combining multiple losses together**. Models trained with channel distillation + SSIM + feature + style losses achieved the strongest lip sync metrics (LSE-D and LSE-C scores) and reached stable validation loss.
+The best results came from **combining multiple losses together**. Models trained with channel distillation + SSIM + feature + style + TV losses achieved the strongest lip sync metrics (LSE-D and LSE-C scores) and reached stable validation loss.
 
 Sample frames comparing student outputs at 80 epochs showed that the full multi loss knowledge distillation setup produced faces that were structurally and texturally closer to the teacher outputs. For the better performing models, visual differences between student and teacher outputs were often subtle, suggesting that a more challenging dataset could better highlight the effects of different loss combinations.
 
